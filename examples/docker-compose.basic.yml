@@ -6,11 +6,12 @@ services:
     restart: unless-stopped
     shm_size: 4g
     environment:
-      TZ: America/New_York
       PLEX_UID: "1000"
       PLEX_GID: "1000"
-      # PLEX_CLAIM: "claim-xxxx"  # get from plex.tv/claim — only needed on first run
+      LIBVA_DRIVER_NAME: auto   # auto-detects Intel iHD/i965 or AMD radeonsi
+      # PLEX_CLAIM: "claim-xxxx"
     volumes:
+      - /etc/localtime:/etc/localtime:ro
       - /opt/plex/config:/config
       - /opt/plex/transcode:/transcode
       - /mnt/media:/mnt/media:ro

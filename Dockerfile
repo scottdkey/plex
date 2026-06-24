@@ -9,9 +9,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PLEX_MEDIA_SERVER_TMPDIR=/tmp \
     PLEX_UID=1000 \
     PLEX_GID=1000 \
-    TZ=UTC \
-    LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri \
-    LIBVA_DRIVER_NAME=iHD
+    LIBVA_DRIVER_NAME=auto
+
+# Timezone from host via /etc/localtime mount — tzdata needed as fallback
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+    && apt-get clean && find /var/lib/apt/lists -type f -delete
 
 # Enable non-free and non-free-firmware for intel-media-va-driver-non-free
 RUN sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' \
@@ -32,6 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # OpenCL — required for HDR→SDR tone mapping via tonemap_vaapi
       intel-opencl-icd \
       ocl-icd-libopencl1 \
+      # AMD VA-API: GCN+ (RX 400 series and newer) via Mesa radeonsi driver
+      mesa-va-drivers \
       # Privilege drop helper
       gosu \
       # Diagnostics (small, useful for debugging)
