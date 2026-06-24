@@ -13,10 +13,20 @@
 #   PBS_FINGERPRINT  server certificate fingerprint (optional if trusted)
 #   PBS_PASSWORD     (optional)
 #
-# Curl: curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/restore.sh | bash -s -- /path/to/backup.tar.gz
+# Invocation:
+#   LXC (inside container):
+#     bash restore.sh /mnt/backups/plex-backup-minimal-20260624-010000.tar.gz
+#
+#   Docker (inside container):
+#     docker exec plex bash -c "curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/restore.sh | bash -s -- /backups/plex-backup-minimal-20260624-010000.tar.gz"
+#
+#   Docker host (stops/starts container around restore):
+#     curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/restore.sh \
+#       | bash -s -- /opt/plex/backups/plex-backup-minimal-20260624-010000.tar.gz --container plex
 set -euo pipefail
 
 BACKUP_FILE=""
+CONTAINER=""
 PBS=0
 PBS_SNAPSHOT=""
 FORCE=0
@@ -29,43 +39,54 @@ fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --pbs)       PBS=1;               shift ;;
-        --snapshot)  PBS_SNAPSHOT="$2";   shift 2 ;;
-        --force)     FORCE=1;             shift ;;
+        --container)  CONTAINER="$2";      shift 2 ;;
+        --pbs)        PBS=1;               shift ;;
+        --snapshot)   PBS_SNAPSHOT="$2";   shift 2 ;;
+        --force)      FORCE=1;             shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
-# Auto-detect Plex data dir
-if [[ -d /var/lib/plexmediaserver ]]; then
+# ── Auto-detect Plex data dir ─────────────────────────────────────────────────
+if [[ -n "$CONTAINER" ]]; then
+    DATA_DIR=$(docker inspect "$CONTAINER" \
+        --format '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)
+    [[ -n "$DATA_DIR" ]] || { echo "[restore] Error: could not determine /config volume for '${CONTAINER}'" >&2; exit 1; }
+elif [[ -d /var/lib/plexmediaserver ]]; then
     DATA_DIR="/var/lib/plexmediaserver"
 elif [[ -d /config ]]; then
     DATA_DIR="/config"
 else
-    echo "[restore] Error: could not find Plex data dir (/var/lib/plexmediaserver or /config)" >&2
+    echo "[restore] Error: Plex data dir not found. Use --container NAME for host-side Docker." >&2
     exit 1
 fi
 
 PMS_DIR="${DATA_DIR}/Library/Application Support/Plex Media Server"
 
-# Detect runtime environment
+# ── Runtime detection ─────────────────────────────────────────────────────────
 HAS_SYSTEMCTL=0
-command -v systemctl > /dev/null 2>&1 && systemctl status > /dev/null 2>&1 && HAS_SYSTEMCTL=1 || true
+command -v systemctl > /dev/null 2>&1 && systemctl is-system-running > /dev/null 2>&1 && HAS_SYSTEMCTL=1 || true
 
 plex_stop() {
-    if [[ $HAS_SYSTEMCTL -eq 1 ]]; then
-        echo "[restore] Stopping plexmediaserver..."
+    if [[ -n "$CONTAINER" ]]; then
+        echo "[restore] Stopping Docker container: ${CONTAINER}..."
+        docker stop "$CONTAINER" 2>/dev/null || true
+    elif [[ $HAS_SYSTEMCTL -eq 1 ]]; then
+        echo "[restore] Stopping plexmediaserver (systemctl)..."
         systemctl stop plexmediaserver 2>/dev/null || true
-    elif pgrep -x "Plex Media Server" > /dev/null 2>&1; then
-        echo "[restore] Sending SIGTERM to Plex Media Server..."
-        pkill -x "Plex Media Server" || true
+    elif pgrep -f "Plex Media Server" > /dev/null 2>&1; then
+        echo "[restore] Stopping Plex Media Server (pkill)..."
+        pkill -f "Plex Media Server" || true
         sleep 3
     fi
 }
 
 plex_start() {
-    if [[ $HAS_SYSTEMCTL -eq 1 ]]; then
-        echo "[restore] Starting plexmediaserver..."
+    if [[ -n "$CONTAINER" ]]; then
+        echo "[restore] Starting Docker container: ${CONTAINER}..."
+        docker start "$CONTAINER" 2>/dev/null || true
+    elif [[ $HAS_SYSTEMCTL -eq 1 ]]; then
+        echo "[restore] Starting plexmediaserver (systemctl)..."
         systemctl start plexmediaserver 2>/dev/null || true
         echo "[restore] Plex started."
     fi

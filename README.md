@@ -267,15 +267,25 @@ pct exec <vmid> -- bash <(curl -fsSL https://raw.githubusercontent.com/argyle-la
 
 ### Docker (tar.gz)
 
+Three invocation patterns — inside the container, or from the host with `--container`:
+
 ```sh
-# Minimal backup
-docker exec plex bash <(curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/backup.sh)
+# Inside container — minimal backup to /mnt/backups (if mounted) or ./
+docker exec plex bash -c "curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/backup.sh | bash"
 
-# Complete backup
-docker exec plex bash <(curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/backup.sh) --complete --output /mnt/backups
+# Inside container — complete backup
+docker exec plex bash -c "curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/backup.sh | bash -s -- --complete"
 
-# Restore
-docker exec plex bash <(curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/restore.sh) /mnt/backups/plex-backup-minimal-20260101-120000.tar.gz --force
+# Host-side — stops container, backs up the /config volume, restarts container
+curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/backup.sh \
+  | bash -s -- --container plex --output /opt/plex/backups
+
+# Host-side — restore (stops container, extracts, restarts)
+curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/restore.sh \
+  | bash -s -- /opt/plex/backups/plex-backup-minimal-20260624-010000.tar.gz --container plex
+
+# Inside container — restore
+docker exec plex bash -c "curl -fsSL https://raw.githubusercontent.com/argyle-labs/plex/main/scripts/restore.sh | bash -s -- /backups/plex-backup-minimal-20260624-010000.tar.gz --force"
 ```
 
 Backup output filename: `plex-backup-minimal-YYYYMMDD-HHMMSS.tar.gz` or `plex-backup-complete-YYYYMMDD-HHMMSS.tar.gz`.
