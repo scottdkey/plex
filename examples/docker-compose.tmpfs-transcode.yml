@@ -1,0 +1,20 @@
+# Uses tmpfs for transcode — fast, zero disk wear, lost on restart (fine for transcode cache)
+services:
+  plex:
+    image: ghcr.io/scottdkey/plex:latest
+    container_name: plex
+    network_mode: host
+    restart: unless-stopped
+    shm_size: 8g
+    environment:
+      TZ: America/New_York
+      PLEX_UID: "1000"
+      PLEX_GID: "1000"
+    volumes:
+      - /opt/plex/config:/config
+      - /mnt/media:/mnt/media:ro
+    tmpfs:
+      - /transcode:size=4g,mode=1777
+    devices:
+      - /dev/dri/renderD128
+      - /dev/dri/card0
