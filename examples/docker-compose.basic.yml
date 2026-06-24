@@ -1,0 +1,19 @@
+services:
+  plex:
+    image: ghcr.io/argyle-labs/plex:latest
+    container_name: plex
+    network_mode: host
+    restart: unless-stopped
+    shm_size: 4g
+    environment:
+      TZ: America/New_York
+      PLEX_UID: "1000"
+      PLEX_GID: "1000"
+      # PLEX_CLAIM: "claim-xxxx"  # get from plex.tv/claim — only needed on first run
+    volumes:
+      - /opt/plex/config:/config
+      - /opt/plex/transcode:/transcode
+      - /mnt/media:/mnt/media:ro
+    devices:
+      - /dev/dri/renderD128
+      - /dev/dri/card0

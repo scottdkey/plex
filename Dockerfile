@@ -13,6 +13,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri \
     LIBVA_DRIVER_NAME=iHD
 
+# Enable non-free and non-free-firmware for intel-media-va-driver-non-free
+RUN sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' \
+      /etc/apt/sources.list.d/debian.sources
+
 # System deps + Intel VAAPI drivers (both generations) + OpenCL
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
