@@ -1,0 +1,27 @@
+services:
+  plex:
+    image: ghcr.io/argyle-labs/plex:latest
+    container_name: plex
+    network_mode: host
+    restart: unless-stopped
+    shm_size: 4g
+    environment:
+      TZ: America/New_York
+      PLEX_UID: "999"
+      PLEX_GID: "996"
+      LIBVA_DRIVER_NAME: iHD        # or: i965, auto
+      # PLEX_CLAIM: "claim-xxxx"    # only needed on first run
+    volumes:
+      - /var/lib/plexmediaserver:/config
+      - /mnt/data:/mnt/data
+      - /mnt/backups:/mnt/backups
+      - /dev/shm/plex-transcode:/transcode
+    devices:
+      - /dev/dri/renderD128
+      - /dev/dri/card0
+    healthcheck:
+      test: ["CMD", "curl", "-fsSL", "http://localhost:32400/identity"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3

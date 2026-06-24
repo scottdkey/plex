@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR="${CONFIG_DIR:-/config/Library/Application Support}"
+PREFERENCES_PATH="${PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR}/Plex Media Server/Preferences.xml"
+
+# Ensure plex user/group match requested uid/gid
+if ! getent group plex > /dev/null 2>&1; then
+    groupadd -g "${PLEX_GID}" plex
+fi
+if ! getent passwd plex > /dev/null 2>&1; then
+    useradd -u "${PLEX_UID}" -g "${PLEX_GID}" -d /config -s /bin/bash plex
+else
+    usermod -u "${PLEX_UID}" -g "${PLEX_GID}" plex
+fi
+
+# Create required directories
+mkdir -p \
+    "${PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR}/Plex Media Server" \
+    "${TRANSCODE_DIR:-/transcode}"
+chown -R plex:plex /config "${TRANSCODE_DIR:-/transcode}"
+
+# Select VA driver based on GPU generation if not overridden
+# iHD for Gen8+ (default); i965 for older
+if [[ "${LIBVA_DRIVER_NAME:-}" == "auto" ]]; then
+    if vainfo --display drm --device /dev/dri/renderD128 2>/dev/null | grep -q iHD; then
+        export LIBVA_DRIVER_NAME=iHD
+    else
+        export LIBVA_DRIVER_NAME=i965
+    fi
+fi
+
+# Write claim token into preferences if provided and not yet claimed
+if [[ -n "${PLEX_CLAIM:-}" ]] && [[ ! -f "${PREFERENCES_PATH}" ]]; then
+    mkdir -p "$(dirname "${PREFERENCES_PATH}")"
+    cat > "${PREFERENCES_PATH}" << XML
+<?xml version="1.0" encoding="utf-8"?>
+<Preferences PlexOnlineToken="${PLEX_CLAIM}" HardwareAcceleratedEncoders="1" HardwareAcceleratedCodecs="1" TranscoderToneMapping="1" TranscoderToneMappingAgorithm="mobius" />
+XML
+    chown plex:plex "${PREFERENCES_PATH}"
+fi
+
+exec gosu plex env \
+    LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH}" \
+    LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME}" \
+    /usr/lib/plexmediaserver/Plex\ Media\ Server
