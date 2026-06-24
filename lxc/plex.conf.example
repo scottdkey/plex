@@ -1,27 +1,49 @@
 # Proxmox LXC config for Plex — /etc/pve/lxc/<vmid>.conf
-# GPU device GIDs must match `stat -c '%g' /dev/dri/renderD128` on the PVE host.
 #
+# Get GPU device GIDs from the Proxmox host:
+#   stat -c '%g' /dev/dri/renderD128   # usually 44 on Debian/Ubuntu PVE hosts
+#   stat -c '%g' /dev/dri/card0
+
+# ─── MINIMAL (software transcode only, no GPU) ────────────────────────────────
+#
+# arch: amd64
+# cores: 2
+# memory: 2048
+# swap: 512
+# hostname: plex
+# ostype: debian
+# rootfs: local-lvm:vm-<vmid>-disk-0,size=16G
+# net0: name=eth0,bridge=vmbr0,ip=dhcp,firewall=1
+# features: nesting=1
+# lxc.apparmor.profile: unconfined
+# lxc.seccomp.profile:
+# lxc.mount.entry: tmpfs dev/shm tmpfs nodev,nosuid,size=2g,mode=1777,create=dir 0 0
+# mp0: /mnt/pool/data,mp=/mnt/media,ro=1
+# mp1: /opt/plex/config,mp=/var/lib/plexmediaserver
+
+# ─── RECOMMENDED (Intel/AMD GPU hardware transcode + HDR tone mapping) ─────────
+
 arch: amd64
 cores: 4
 memory: 4096
+swap: 0
 hostname: plex
 ostype: debian
 rootfs: local-lvm:vm-<vmid>-disk-0,size=32G
 net0: name=eth0,bridge=vmbr0,ip=dhcp,firewall=1
-swap: 0
 
-# GPU passthrough
-dev0: /dev/dri/renderD128,gid=44
-dev1: /dev/dri/card0,gid=44
-
-# Required for nested functionality and GPU access
+# Required for GPU device access and apparmor bypass
 features: nesting=1
 lxc.apparmor.profile: unconfined
 lxc.seccomp.profile:
 
-# Shared memory for transcode buffers (4GB minimum recommended)
+# Shared memory for transcode buffers — 4GB minimum for hardware transcode
 lxc.mount.entry: tmpfs dev/shm tmpfs nodev,nosuid,size=4g,mode=1777,create=dir 0 0
 
-# Mount points — adjust paths to your storage
+# GPU passthrough — GIDs must match host (verify with stat -c '%g' /dev/dri/renderD128)
+dev0: /dev/dri/renderD128,gid=44
+dev1: /dev/dri/card0,gid=44
+
+# Mount points
 mp0: /mnt/pool/data,mp=/mnt/media,ro=1
 mp1: /opt/plex/config,mp=/var/lib/plexmediaserver

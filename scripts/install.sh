@@ -22,9 +22,19 @@ apt-get install -y --no-install-recommends \
     gosu \
     vainfo
 
-# Enable non-free repos for Intel drivers
-sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' \
-    /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
+# Enable non-free repos for Intel drivers (idempotent).
+# Debian 12 Docker image uses DEB822 format; Proxmox LXC templates use legacy sources.list.
+if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+    if ! grep -q 'non-free' /etc/apt/sources.list.d/debian.sources; then
+        sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' \
+            /etc/apt/sources.list.d/debian.sources
+    fi
+elif [ -f /etc/apt/sources.list ]; then
+    if ! grep -q 'non-free' /etc/apt/sources.list; then
+        sed -i 's/^\(deb .*debian\.org\/debian bookworm main\)$/\1 contrib non-free non-free-firmware/' \
+            /etc/apt/sources.list
+    fi
+fi
 
 # Intel drivers are x86-only
 ARCH=$(dpkg --print-architecture)
