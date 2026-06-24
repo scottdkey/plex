@@ -14,23 +14,63 @@ else
     usermod -u "${PLEX_UID}" -g "${PLEX_GID}" plex
 fi
 
+# Add plex user to whatever groups own the GPU devices
+for dev in /dev/dri/renderD128 /dev/dri/card0 /dev/nvidia*; do
+    [[ -e "$dev" ]] || continue
+    dev_gid=$(stat -c '%g' "$dev")
+    if ! getent group "$dev_gid" > /dev/null 2>&1; then
+        groupadd -g "$dev_gid" "gpu-${dev_gid}"
+    fi
+    usermod -aG "$dev_gid" plex 2>/dev/null || true
+done
+
+# Auto-detect GPU and configure hardware transcoding
+detect_gpu() {
+    # NVIDIA: runtime mounts /dev/nvidia* — NVENC/NVDEC, no VAAPI needed
+    if [[ -e /dev/nvidia0 ]]; then
+        echo "nvidia"
+        return
+    fi
+
+    # VAAPI: probe each driver in preference order
+    if [[ -e /dev/dri/renderD128 ]]; then
+        for driver in iHD radeonsi i965; do
+            if LIBVA_DRIVER_NAME=$driver LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH}" \
+                vainfo --display drm --device /dev/dri/renderD128 > /dev/null 2>&1; then
+                echo "$driver"
+                return
+            fi
+        done
+    fi
+
+    echo "none"
+}
+
+if [[ "${LIBVA_DRIVER_NAME:-auto}" == "auto" ]]; then
+    detected=$(detect_gpu)
+    case "$detected" in
+        nvidia)
+            echo "[entrypoint] GPU: NVIDIA (NVENC/NVDEC)"
+            unset LIBVA_DRIVER_NAME
+            ;;
+        none)
+            echo "[entrypoint] GPU: none detected — software transcoding only"
+            unset LIBVA_DRIVER_NAME
+            ;;
+        *)
+            echo "[entrypoint] GPU: VAAPI driver=${detected}"
+            export LIBVA_DRIVER_NAME="$detected"
+            ;;
+    esac
+fi
+
 # Create required directories
 mkdir -p \
     "${PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR}/Plex Media Server" \
     "${TRANSCODE_DIR:-/transcode}"
 chown -R plex:plex /config "${TRANSCODE_DIR:-/transcode}"
 
-# Select VA driver based on GPU generation if not overridden
-# iHD for Gen8+ (default); i965 for older
-if [[ "${LIBVA_DRIVER_NAME:-}" == "auto" ]]; then
-    if vainfo --display drm --device /dev/dri/renderD128 2>/dev/null | grep -q iHD; then
-        export LIBVA_DRIVER_NAME=iHD
-    else
-        export LIBVA_DRIVER_NAME=i965
-    fi
-fi
-
-# Write claim token into preferences if provided and not yet claimed
+# Write initial preferences if claim token provided and prefs don't exist yet
 if [[ -n "${PLEX_CLAIM:-}" ]] && [[ ! -f "${PREFERENCES_PATH}" ]]; then
     mkdir -p "$(dirname "${PREFERENCES_PATH}")"
     cat > "${PREFERENCES_PATH}" << XML
@@ -40,7 +80,16 @@ XML
     chown plex:plex "${PREFERENCES_PATH}"
 fi
 
+# Resolve VAAPI driver path for this architecture
+ARCH=$(uname -m)
+case "$ARCH" in
+    aarch64) LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH:-/usr/lib/aarch64-linux-gnu/dri}" ;;
+    armv7l)  LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH:-/usr/lib/arm-linux-gnueabihf/dri}" ;;
+    *)       LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH:-/usr/lib/x86_64-linux-gnu/dri}" ;;
+esac
+export LIBVA_DRIVERS_PATH
+
 exec gosu plex env \
     LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH}" \
-    LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME}" \
+    ${LIBVA_DRIVER_NAME:+LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME}"} \
     /usr/lib/plexmediaserver/Plex\ Media\ Server

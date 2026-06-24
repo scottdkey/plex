@@ -1,5 +1,3 @@
-# Dockge-managed deployment — paste into Dockge's compose editor
-# Set PLEX_UID/PLEX_GID to match the user owning your config directory
 services:
   plex:
     image: ghcr.io/argyle-labs/plex:latest
@@ -8,12 +6,12 @@ services:
     restart: unless-stopped
     shm_size: 4g
     environment:
-      TZ: America/New_York
       PLEX_UID: "1000"
       PLEX_GID: "1000"
-      LIBVA_DRIVER_NAME: iHD   # iHD = Gen8+ (default) | i965 = Gen4-9 | auto = detect
+      LIBVA_DRIVER_NAME: auto
       # PLEX_CLAIM: "claim-xxxx"
     volumes:
+      - /etc/localtime:/etc/localtime:ro
       - /opt/plex/config:/config
       - /opt/plex/transcode:/transcode
       - /mnt/media:/mnt/media:ro
