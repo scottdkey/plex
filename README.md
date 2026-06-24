@@ -2,17 +2,40 @@
 
 Self-hosted Plex Media Server with automatic GPU detection and hardware transcoding.
 
-Built from `debian:12-slim`. Works with Intel, AMD, and NVIDIA GPUs. Runs on `amd64` and `arm64`.
+Built from `debian:12-slim`. Supports native LXC, Docker, Podman, and Dockge. Works with Intel, AMD, and NVIDIA GPUs on `amd64` and `arm64`.
 
-## Features
+## Deployment Paths
 
-- Auto-detects GPU: Intel Quick Sync (iHD/i965), AMD VAAPI (radeonsi), NVIDIA NVENC/NVDEC
-- HDR → SDR tone mapping via `tonemap_vaapi` with OpenCL (Intel iHD Gen8+)
-- Timezone inherited from host automatically via `/etc/localtime` mount
-- Automatic uid/gid remapping — no permission headaches
-- Works on Docker, Podman, and Dockge
-- Published to GHCR: `ghcr.io/argyle-labs/plex:latest`
-- Versioned tags synced daily to Plex upstream (last 5 versions kept)
+| Path | Use case |
+|---|---|
+| [Native LXC](#proxmox-lxc-native) | Proxmox — preferred, no Docker overhead |
+| [Docker / Compose](#docker--compose) | Any Linux host with Docker |
+
+## Specs
+
+### Minimal (software transcode only)
+
+| Resource | Value |
+|---|---|
+| CPU | 2 cores |
+| RAM | 2 GB |
+| Disk | 16 GB (rootfs) |
+| GPU | none required |
+| shm | 2 GB |
+
+Software transcode works but is CPU-bound. 4K content will max out cores.
+
+### Recommended (hardware transcode + HDR tone mapping)
+
+| Resource | Value |
+|---|---|
+| CPU | 4 cores |
+| RAM | 4 GB |
+| Disk | 32 GB (rootfs) |
+| GPU | Intel iHD Gen8+ (UHD 600+) or AMD GCN+ |
+| shm | 4 GB |
+
+Hardware transcode offloads encode/decode to the GPU. Intel iHD additionally supports HDR→SDR tone mapping via OpenCL.
 
 ## GPU Support
 
@@ -23,9 +46,104 @@ Built from `debian:12-slim`. Works with Intel, AMD, and NVIDIA GPUs. Runs on `am
 | AMD | GCN+ (RX 400+), RDNA 1/2/3 | `radeonsi` | Via Mesa; hardware encode/decode only |
 | NVIDIA | GTX 900+ / RTX | NVENC/NVDEC | Requires `nvidia-container-toolkit` on host |
 
-`LIBVA_DRIVER_NAME=auto` (the default) probes the available hardware and selects the right driver automatically.
+`LIBVA_DRIVER_NAME=auto` (the default) probes available hardware and selects the right driver automatically.
 
-## Quick Start
+---
+
+## Proxmox LXC (native)
+
+The preferred deployment on Proxmox: plain Debian 12 LXC with Plex installed directly — no Docker.
+
+### Automated provisioning
+
+Clone the repo on the Proxmox host and run as root:
+
+```sh
+git clone https://github.com/argyle-labs/plex
+cd plex
+
+# Minimal — software transcode, DHCP, 2 cores / 2 GB RAM
+bash lxc/provision.sh 116 \
+  --hostname plex \
+  --storage local-lvm \
+  --disk 16G \
+  --memory 2048 \
+  --cores 2 \
+  --no-gpu \
+  --config /opt/plex/config \
+  --media /mnt/<pool>/data
+
+# Recommended — Intel/AMD GPU, DHCP, 4 cores / 4 GB RAM
+bash lxc/provision.sh 116 \
+  --hostname plex \
+  --storage local-lvm \
+  --memory 4096 \
+  --cores 4 \
+  --config /opt/plex/config \
+  --media /mnt/<pool>/data
+
+# Recommended — static IP
+bash lxc/provision.sh 116 \
+  --hostname plex \
+  --storage local-lvm \
+  --memory 4096 \
+  --cores 4 \
+  --ip <ip>/24 \
+  --gw <ip> \
+  --config /opt/plex/config \
+  --media /mnt/<pool>/data
+
+# Pinned Plex version
+bash lxc/provision.sh 116 \
+  --hostname plex \
+  --plex-version 1.41.2.9200-c6bbc1b53 \
+  --config /opt/plex/config \
+  --media /mnt/<pool>/data
+```
+
+GPU device GIDs are auto-detected from the host. Pass `--render-gid` / `--card-gid` to override, or `--no-gpu` to skip passthrough entirely.
+
+The script: resolves the latest Debian 12 template, creates the LXC, adds GPU passthrough, starts it, runs `install.sh` + `configure.sh`, and prints the Plex URL when done.
+
+### Manual install
+
+Create and start a Debian 12 LXC using `lxc/plex.conf.example` as a reference, then on the Proxmox host:
+
+```sh
+# Copy scripts into the container and run them
+pct push <vmid> scripts/install.sh /tmp/install.sh --mode 0755
+pct exec <vmid> -- bash /tmp/install.sh
+
+pct push <vmid> scripts/configure.sh /tmp/configure.sh --mode 0755
+pct exec <vmid> -- bash /tmp/configure.sh
+```
+
+### LXC config reference
+
+See [`lxc/plex.conf.example`](lxc/plex.conf.example) for minimal and recommended annotated configs.
+
+Key entries for GPU passthrough (get GIDs from host: `stat -c '%g' /dev/dri/renderD128`):
+
+```
+features: nesting=1
+lxc.apparmor.profile: unconfined
+lxc.seccomp.profile:
+lxc.mount.entry: tmpfs dev/shm tmpfs nodev,nosuid,size=4g,mode=1777,create=dir 0 0
+dev0: /dev/dri/renderD128,gid=44
+dev1: /dev/dri/card0,gid=44
+```
+
+### Verify GPU (LXC)
+
+```sh
+pct exec <vmid> -- vainfo --display drm --device /dev/dri/renderD128
+```
+
+---
+
+## Docker / Compose
+
+### Quick start
 
 ```sh
 docker run -d \
@@ -47,17 +165,17 @@ docker run -d \
 
 Get a claim token at [plex.tv/claim](https://plex.tv/claim) — expires in 4 minutes.
 
-`--shm-size=4g` is required; the default 64MB shm is too small for Plex transcode buffers.
+`--shm-size=4g` is required; Docker's default 64MB shm is too small for Plex transcode buffers.
 
-## Compose Examples
+### Compose examples
 
 See the [`examples/`](examples/) directory:
 
 | File | Description |
 |---|---|
-| `docker-compose.basic.yml` | Minimal setup — works for Intel and AMD |
-| `docker-compose.dockge.yml` | Dockge-managed deployment with healthcheck |
-| `docker-compose.tmpfs-transcode.yml` | RAM-backed transcode dir (fastest, no disk wear) |
+| `docker-compose.basic.yml` | Minimal setup — Intel/AMD GPU, auto-detect |
+| `docker-compose.dockge.yml` | Dockge-managed with healthcheck |
+| `docker-compose.tmpfs-transcode.yml` | RAM-backed transcode (fastest, no disk wear) |
 | `docker-compose.nvidia.yml` | NVIDIA GPU via nvidia-container-toolkit |
 
 All examples use `LIBVA_DRIVER_NAME: auto` and inherit timezone from the host.
@@ -68,7 +186,7 @@ cp examples/docker-compose.dockge.yml compose.yml
 docker compose up -d
 ```
 
-## Environment Variables
+### Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
@@ -76,20 +194,28 @@ docker compose up -d
 | `PLEX_GID` | `1000` | GID for the plex process |
 | `LIBVA_DRIVER_NAME` | `auto` | `auto`, `iHD`, `i965`, `radeonsi` — auto-detected at startup |
 | `LIBVA_DRIVERS_PATH` | _(arch-detected)_ | Path to VA driver `.so` files |
-| `PLEX_CLAIM` | _(unset)_ | Claim token from plex.tv/claim — used only on first run |
+| `PLEX_CLAIM` | _(unset)_ | Claim token from plex.tv/claim — first run only |
 | `CONFIG_DIR` | `/config/Library/Application Support` | Plex application support dir |
 | `TRANSCODE_DIR` | `/transcode` | Transcode working directory |
 
-## Volumes
+### Volumes
 
 | Mount | Description |
 |---|---|
 | `/etc/localtime` | Mount from host (`ro`) — sets container timezone automatically |
 | `/config` | Plex library, database, preferences — **must be persistent** |
-| `/transcode` | Transcode working directory — can be tmpfs or a fast disk |
+| `/transcode` | Transcode working dir — can be tmpfs or a fast disk |
 | `/mnt/media` | Your media library — mount any path here (read-only recommended) |
 
 The `/config` volume must be the **parent** of `Library/` — i.e. `/your/path:/config`, not `/your/path/Library/Application Support:/config`.
+
+### Verify GPU (Docker)
+
+```sh
+docker exec plex vainfo --display drm --device /dev/dri/renderD128
+```
+
+---
 
 ## NVIDIA Prerequisites
 
@@ -108,63 +234,7 @@ sudo systemctl restart docker
 
 Then use `examples/docker-compose.nvidia.yml`.
 
-## Proxmox LXC (native, no Docker)
-
-The preferred way to run Plex on Proxmox is a plain Debian 12 LXC with Plex installed directly — no Docker layer.
-
-### Automated provisioning
-
-Run on the Proxmox host as root:
-
-```sh
-git clone https://github.com/argyle-labs/plex
-cd plex
-
-# Basic — DHCP, media at /mnt/<pool>/data
-bash lxc/provision.sh 116 \
-  --hostname plex \
-  --storage local-lvm \
-  --memory 4096 \
-  --cores 4 \
-  --media /mnt/<pool>/data \
-  --config /opt/plex/config
-
-# Pinned Plex version + static IP
-bash lxc/provision.sh 116 \
-  --hostname plex \
-  --ip <ip>/24 \
-  --gw <ip> \
-  --media /mnt/<pool>/data \
-  --plex-version 1.41.2.9200-c6bbc1b53
-```
-
-The script creates the LXC, configures GPU passthrough, installs Plex, auto-detects the GPU driver, and starts the service. Plex is reachable at `:32400/web` when done.
-
-### Manual LXC config
-
-See [`lxc/plex.conf.example`](lxc/plex.conf.example) for a full annotated config. Key entries for GPU passthrough:
-
-```
-features: nesting=1
-lxc.apparmor.profile: unconfined
-lxc.seccomp.profile:
-lxc.mount.entry: tmpfs dev/shm tmpfs nodev,nosuid,size=4g,mode=1777,create=dir 0 0
-dev0: /dev/dri/renderD128,gid=44
-dev1: /dev/dri/card0,gid=44
-```
-
-Check the GID: `stat -c '%g' /dev/dri/renderD128` on the Proxmox host.
-
-After creating the LXC, install Plex:
-
-```sh
-# On the Proxmox host
-pct push <vmid> scripts/install.sh /tmp/install.sh --perms 0755
-pct exec <vmid> -- bash /tmp/install.sh
-
-pct push <vmid> scripts/configure.sh /tmp/configure.sh --perms 0755
-pct exec <vmid> -- bash /tmp/configure.sh
-```
+---
 
 ## Enabling Hardware Transcoding in Plex
 
@@ -174,15 +244,11 @@ After first run, open Plex Settings:
 2. **Settings → Transcoder → Use Hardware-Accelerated Video Encoding** ✓
 3. **Settings → Transcoder → Enable HDR tone mapping** ✓ _(Intel iHD only)_
 
-Verify GPU access inside the container:
-
-```sh
-docker exec plex vainfo
-```
-
 ## Plex Pass
 
 Hardware transcoding requires an active [Plex Pass](https://www.plex.tv/plex-pass/) subscription.
+
+---
 
 ## Tags
 
@@ -201,6 +267,6 @@ Tags match Plex's own version strings from `plex.tv/api/downloads/5.json`.
 git clone https://github.com/argyle-labs/plex
 cd plex
 docker build -t plex-local .
-# or pin a specific Plex version:
+# pin a specific Plex version:
 docker build --build-arg PLEX_VERSION=1.41.2.9200-c6bbc1b53 -t plex-local .
 ```

@@ -15,7 +15,7 @@ case "$ARCH" in
     *)       LIBVA_DRIVERS_PATH="/usr/lib/x86_64-linux-gnu/dri" ;;
 esac
 
-# Detect GPU
+# Detect GPU (runs as root so device access is not blocked)
 detect_gpu() {
     if [[ -e /dev/dri/renderD128 ]]; then
         for driver in iHD radeonsi i965; do
@@ -30,14 +30,16 @@ detect_gpu() {
 }
 
 GPU_DRIVER=$(detect_gpu)
-echo "[configure] GPU driver: $GPU_DRIVER"
+echo "[configure] GPU driver: ${GPU_DRIVER}"
 
-# Adjust plex user uid/gid to match host
+# Adjust plex user uid/gid — package installer creates the user, we may need to re-id it
 if getent passwd plex > /dev/null 2>&1; then
-    usermod -u "$PLEX_UID" plex
+    CURRENT_UID=$(id -u plex)
+    [ "$CURRENT_UID" != "$PLEX_UID" ] && usermod -u "$PLEX_UID" plex || true
 fi
 if getent group plex > /dev/null 2>&1; then
-    groupmod -g "$PLEX_GID" plex
+    CURRENT_GID=$(getent group plex | cut -d: -f3)
+    [ "$CURRENT_GID" != "$PLEX_GID" ] && groupmod -g "$PLEX_GID" plex || true
 fi
 
 # Add plex to GPU device groups
@@ -52,22 +54,20 @@ for dev in /dev/dri/renderD128 /dev/dri/card0 /dev/nvidia*; do
 done
 shopt -u nullglob
 
-# Write systemd override with VAAPI env vars
+# Write systemd drop-in with VAAPI env vars
 mkdir -p /etc/systemd/system/plexmediaserver.service.d
-cat > /etc/systemd/system/plexmediaserver.service.d/gpu.conf << EOF
-[Service]
-Environment=LIBVA_DRIVERS_PATH=${LIBVA_DRIVERS_PATH}
-EOF
-
-if [[ "$GPU_DRIVER" != "none" ]]; then
-    cat >> /etc/systemd/system/plexmediaserver.service.d/gpu.conf << EOF
-Environment=LIBVA_DRIVER_NAME=${GPU_DRIVER}
-EOF
-fi
+{
+    echo "[Service]"
+    echo "Environment=LIBVA_DRIVERS_PATH=${LIBVA_DRIVERS_PATH}"
+    if [[ "$GPU_DRIVER" != "none" ]]; then
+        echo "Environment=LIBVA_DRIVER_NAME=${GPU_DRIVER}"
+    fi
+} > /etc/systemd/system/plexmediaserver.service.d/gpu.conf
 
 systemctl daemon-reload
-systemctl enable plexmediaserver
-systemctl restart plexmediaserver
+systemctl enable --now plexmediaserver
 
-echo "[configure] Plex started. Reachable at http://$(hostname -I | awk '{print $1}'):32400/web"
-echo "[configure] Run 'vainfo' as plex user to verify GPU access."
+LXC_IP=$(hostname -I | awk '{print $1}')
+echo ""
+echo "[configure] Done. Plex is running at http://${LXC_IP}:32400/web"
+echo "[configure] Verify GPU: vainfo --display drm --device /dev/dri/renderD128"

@@ -16,8 +16,9 @@
 #   --media PATH          Host path to media directory (mounted read-only at /mnt/media)
 #   --config PATH         Host path for Plex config (mounted at /var/lib/plexmediaserver)
 #   --plex-version VER    Plex version to install (default: latest)
-#   --render-gid GID      GID of /dev/dri/renderD128 on the host (default: 44)
-#   --card-gid GID        GID of /dev/dri/card0 on the host (default: 44)
+#   --render-gid GID      GID of /dev/dri/renderD128 on the host (auto-detected if omitted)
+#   --card-gid GID        GID of /dev/dri/card0 on the host (auto-detected if omitted)
+#   --no-gpu              Skip GPU passthrough (software transcode only)
 set -euo pipefail
 
 VMID="${1:?Usage: $0 <vmid> [options]}"
@@ -34,8 +35,9 @@ GW=""
 MEDIA_PATH=""
 CONFIG_PATH="/opt/plex/config"
 PLEX_VERSION="latest"
-RENDER_GID="44"
-CARD_GID="44"
+RENDER_GID=""
+CARD_GID=""
+NO_GPU=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -52,15 +54,41 @@ while [[ $# -gt 0 ]]; do
         --plex-version) PLEX_VERSION="$2"; shift 2 ;;
         --render-gid)  RENDER_GID="$2";    shift 2 ;;
         --card-gid)    CARD_GID="$2";      shift 2 ;;
+        --no-gpu)      NO_GPU=1;           shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
-# Download Debian 12 template if not present
-TEMPLATE="debian-12-standard_12.7-1_amd64.tar.zst"
+# Auto-detect GPU device GIDs from host if not overridden
+if [[ $NO_GPU -eq 0 ]]; then
+    if [[ -z "$RENDER_GID" ]] && [[ -e /dev/dri/renderD128 ]]; then
+        RENDER_GID=$(stat -c '%g' /dev/dri/renderD128)
+    fi
+    if [[ -z "$CARD_GID" ]] && [[ -e /dev/dri/card0 ]]; then
+        CARD_GID=$(stat -c '%g' /dev/dri/card0)
+    fi
+    if [[ -z "$RENDER_GID" ]]; then
+        echo "[provision] Warning: /dev/dri/renderD128 not found — skipping GPU passthrough" >&2
+        NO_GPU=1
+    fi
+fi
+
+# Resolve the latest available Debian 12 standard template
 TEMPLATE_STORE="local"
-if ! pveam list "$TEMPLATE_STORE" 2>/dev/null | grep -q "$TEMPLATE"; then
-    echo "[provision] Downloading Debian 12 template..."
+TEMPLATE=$(pveam available --section system 2>/dev/null \
+    | awk '{print $2}' \
+    | grep '^debian-12-standard' \
+    | sort -V \
+    | tail -1)
+
+if [[ -z "$TEMPLATE" ]]; then
+    echo "[provision] No Debian 12 standard template found in available list." >&2
+    echo "[provision] Run: pveam update && pveam download local <template-name>" >&2
+    exit 1
+fi
+
+if ! pveam list "$TEMPLATE_STORE" 2>/dev/null | grep -qF "$TEMPLATE"; then
+    echo "[provision] Downloading ${TEMPLATE}..."
     pveam update
     pveam download "$TEMPLATE_STORE" "$TEMPLATE"
 fi
@@ -74,8 +102,8 @@ else
     NET_ARGS="${NET_ARGS},ip=dhcp"
 fi
 
-# Create the container
-echo "[provision] Creating LXC ${VMID}..."
+# Create the container (privileged — required for GPU passthrough)
+echo "[provision] Creating LXC ${VMID} (${HOSTNAME})..."
 pct create "$VMID" "${TEMPLATE_STORE}:vztmpl/${TEMPLATE}" \
     --hostname "$HOSTNAME" \
     --storage "$STORAGE" \
@@ -88,49 +116,52 @@ pct create "$VMID" "${TEMPLATE_STORE}:vztmpl/${TEMPLATE}" \
     --features nesting=1 \
     --start 0
 
-# GPU passthrough
-cat >> "/etc/pve/lxc/${VMID}.conf" << EOF
-lxc.apparmor.profile: unconfined
-lxc.seccomp.profile:
-lxc.mount.entry: tmpfs dev/shm tmpfs nodev,nosuid,size=4g,mode=1777,create=dir 0 0
-dev0: /dev/dri/renderD128,gid=${RENDER_GID}
-dev1: /dev/dri/card0,gid=${CARD_GID}
-EOF
+# GPU passthrough and runtime config
+{
+    echo "lxc.apparmor.profile: unconfined"
+    echo "lxc.seccomp.profile:"
+    echo "lxc.mount.entry: tmpfs dev/shm tmpfs nodev,nosuid,size=4g,mode=1777,create=dir 0 0"
+    if [[ $NO_GPU -eq 0 ]]; then
+        echo "dev0: /dev/dri/renderD128,gid=${RENDER_GID}"
+        [[ -n "$CARD_GID" ]] && echo "dev1: /dev/dri/card0,gid=${CARD_GID}"
+    fi
+} >> "/etc/pve/lxc/${VMID}.conf"
 
-# Media mount (optional)
+# Mount points — sequential from 0
+MP_INDEX=0
 if [[ -n "$MEDIA_PATH" ]]; then
-    MP_INDEX=0
     echo "mp${MP_INDEX}: ${MEDIA_PATH},mp=/mnt/media,ro=1" >> "/etc/pve/lxc/${VMID}.conf"
+    MP_INDEX=$((MP_INDEX + 1))
 fi
-
-# Config mount
 mkdir -p "$CONFIG_PATH"
-MP_INDEX=1
 echo "mp${MP_INDEX}: ${CONFIG_PATH},mp=/var/lib/plexmediaserver" >> "/etc/pve/lxc/${VMID}.conf"
 
 echo "[provision] Starting LXC ${VMID}..."
 pct start "$VMID"
-sleep 5
 
 # Wait for network
 echo "[provision] Waiting for network..."
-for i in $(seq 1 30); do
+for _i in $(seq 1 30); do
     if pct exec "$VMID" -- curl -fsSL --max-time 3 https://downloads.plex.tv > /dev/null 2>&1; then
         break
     fi
     sleep 2
 done
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # Copy and run install script
-echo "[provision] Installing Plex..."
-pct push "$VMID" "$(dirname "$0")/../scripts/install.sh" /tmp/install.sh --perms 0755
+echo "[provision] Installing Plex ${PLEX_VERSION}..."
+pct push "$VMID" "${SCRIPT_DIR}/../scripts/install.sh" /tmp/install.sh --mode 0755
 pct exec "$VMID" -- bash /tmp/install.sh "$PLEX_VERSION"
 
 # Copy and run configure script
 echo "[provision] Configuring Plex..."
-pct push "$VMID" "$(dirname "$0")/../scripts/configure.sh" /tmp/configure.sh --perms 0755
+pct push "$VMID" "${SCRIPT_DIR}/../scripts/configure.sh" /tmp/configure.sh --mode 0755
 pct exec "$VMID" -- bash /tmp/configure.sh
 
+LXC_IP=$(pct exec "$VMID" -- hostname -I | awk '{print $1}')
 echo ""
 echo "[provision] Done. LXC ${VMID} (${HOSTNAME}) is running Plex."
-echo "            Open http://$(pct exec "$VMID" -- hostname -I | awk '{print $1}'):32400/web to set up."
+echo "            Open http://${LXC_IP}:32400/web to set up."
+[[ $NO_GPU -eq 0 ]] && echo "            GPU: render GID=${RENDER_GID}" || echo "            GPU: disabled (software transcode)"
