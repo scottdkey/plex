@@ -1,37 +1,93 @@
 name: Release
 
-# Thin caller stub → orca's reusable Plugin Release.
-# Run from `main`; the `channel` input picks stable vs alpha/beta/rc.
-#   Actions → Release → Run workflow → pick branch + bump + channel.
+# Self-contained plugin release. Builds the cdylib against orca `main` and
+# publishes a GitHub Release with the artifact + sha256.
+#   Actions -> Release -> Run workflow -> pick channel (rc | stable).
 #
-# NOTE: until orca's reusable workflows reach `main`, pin `@dev` temporarily,
-# then flip `@dev` → `@main` once they're merged.
+# Version source of truth = `version` in Cargo.toml. An `rc` release tags
+# `v<version>-rc.<run_number>` (prerelease); a `stable` release tags
+# `v<version>`. Bump the base version by editing Cargo.toml on `main` before
+# cutting a stable release. The private orca dependency is fetched with the
+# same ORCA_FETCH_TOKEN secret CI uses.
 
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: Version bump from latest stable
-        required: true
-        type: choice
-        options: [patch, minor, major]
-        default: patch
       channel:
         description: Release channel
         required: true
         type: choice
-        options: [stable, alpha, beta, rc]
+        options: [rc, stable]
         default: rc
-      notes:
-        description: Extra release notes (optional, prepended to changelog)
-        required: false
-        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   release:
-    uses: argyle-labs/orca/.github/workflows/plugin-release.yml@dev
-    secrets: inherit
-    with:
-      bump:    ${{ inputs.bump }}
-      channel: ${{ inputs.channel }}
-      notes:   ${{ inputs.notes }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Drop local-dev cargo patch
+        run: rm -f .cargo/config.toml
+
+      - name: Authenticate private orca git dependency
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.ORCA_FETCH_TOKEN }}@github.com/".insteadOf \
+            "https://github.com/"
+
+      - name: Build release cdylib
+        run: cargo build --release
+
+      - name: Compute version and stage artifact
+        id: meta
+        run: |
+          name=$(grep -m1 '^name = ' Cargo.toml | sed -E 's/name = "(.*)"/\1/')
+          libname=$(echo "$name" | tr - _)
+          version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          if [ "${{ inputs.channel }}" = "stable" ]; then
+            tag="v${version}"
+            prerelease=false
+          else
+            tag="v${version}-rc.${{ github.run_number }}"
+            prerelease=true
+          fi
+          so="target/release/lib${libname}.so"
+          if [ ! -f "$so" ]; then
+            echo "::error::cdylib not found at $so"; ls -la target/release; exit 1
+          fi
+          asset="${name}-${tag}-x86_64-unknown-linux-gnu.so"
+          cp "$so" "$asset"
+          sha256sum "$asset" > "${asset}.sha256"
+          {
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+            echo "asset=$asset"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          flags=""
+          [ "${{ steps.meta.outputs.prerelease }}" = "true" ] && flags="--prerelease"
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.meta.outputs.tag }}" \
+            --notes "Automated ${{ inputs.channel }} release of \`${{ github.repository }}\`, built against orca \`main\` (x86_64-unknown-linux-gnu)." \
+            $flags \
+            "${{ steps.meta.outputs.asset }}" \
+            "${{ steps.meta.outputs.asset }}.sha256"
