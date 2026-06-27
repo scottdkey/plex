@@ -29,7 +29,7 @@ on:
 
 jobs:
   release:
-    uses: argyle-labs/orca/.github/workflows/plugin-release.yml@main
+    uses: argyle-labs/orca/.github/workflows/plugin-release.yml@dev
     secrets: inherit
     with:
       bump:    ${{ inputs.bump }}

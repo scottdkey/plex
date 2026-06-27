@@ -14,4 +14,4 @@ on:
 
 jobs:
   ci:
-    uses: argyle-labs/orca/.github/workflows/plugin-ci.yml@main
+    uses: argyle-labs/orca/.github/workflows/plugin-ci.yml@dev

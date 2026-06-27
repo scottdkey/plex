@@ -11,5 +11,5 @@ on:
 
 jobs:
   promote:
-    uses: argyle-labs/orca/.github/workflows/plugin-promote-stage.yml@main
+    uses: argyle-labs/orca/.github/workflows/plugin-promote-stage.yml@dev
     secrets: inherit
