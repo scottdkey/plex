@@ -12,6 +12,6 @@
 [net]
 git-fetch-with-cli = true
 
-[patch."https://github.com/scottdkey/orca"]
+[patch."https://github.com/argyle-labs/orca"]
 plugin-toolkit = { path = "../orca/projects/plugin-toolkit" }
 plugin-toolkit-build = { path = "../orca/projects/plugin-toolkit-build" }
